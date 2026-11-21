@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>點餐</title>
+<style>
+:root{--bg:#faf8f5;--card:#fff;--tx:#222;--mu:#777;--ac:#d9480f;--bd:#e6e1d9}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1a18;--card:#262421;--tx:#f1ede6;--mu:#a49d92;--ac:#ff8a4c;--bd:#3a3731;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 system-ui,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px)}
+main{max-width:560px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mu);margin:0 0 20px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px}h3{font-size:14px;margin:14px 0 6px}
+.routes{display:grid;gap:10px}
+button{font:inherit;border-radius:10px;border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:12px 14px;cursor:pointer;text-align:left}
+.routes button:hover{border-color:var(--ac)}.routes small{display:block;color:var(--mu);font-size:13px}
+button.pri{background:var(--ac);color:#fff;border-color:var(--ac);text-align:center;width:100%;margin-top:6px}
+button:disabled{opacity:.5;cursor:default}
+input,textarea{font:inherit;width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);margin-bottom:10px}
+textarea{min-height:84px;resize:vertical}
+.st{border:1px solid var(--bd);border-radius:10px;padding:10px;margin-bottom:10px}
+.lock{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.badge{background:var(--ac);color:#fff;border-radius:8px;padding:2px 10px;font-size:13px}
+.big{font-size:20px;font-weight:700}
+ul{list-style:none;margin:0;padding:0}li{padding:10px 0;border-top:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center;gap:10px}
+li:first-child{border-top:0}.mu{color:var(--mu);font-size:14px}
+.link{background:none;border:0;color:var(--mu);padding:0;text-decoration:underline;font-size:13px;width:auto}
+.mimg{max-width:100%;border-radius:10px;border:1px solid var(--bd);display:block;margin:6px 0}
+#msg{color:var(--ac);min-height:20px;font-size:14px;margin:6px 0 0}
+</style>
+</head>
+<body>
+<main>
+<h1>點餐</h1>
+<p class="sub" id="sub"></p>
+<div id="adminCard" class="card" hidden></div>
+<div id="app" class="card">載入中…</div>
+<div id="orderCard" class="card" hidden></div>
+<div id="listCard" class="card" hidden>
+<h2>彙整（<span id="cnt">0</span> 人）</h2>
+<div id="sumStores"></div>
+<button class="pri" id="copy">複製彙整文字</button><textarea id="copyBox" hidden readonly></textarea>
+</div>
+<p style="text-align:center"><button class="link" id="reset" hidden>管理者：重設這場的路線</button></p>
+<div id="loginCard" class="card" hidden>
+<h2>管理者登入</h2>
+<input id="em" type="email" placeholder="電子郵件" autocomplete="username">
+<input id="pw" type="password" placeholder="密碼" autocomplete="current-password">
+<button class="pri" id="doLogin">登入</button><div id="lmsg" class="mu"></div>
+</div>
+<p style="text-align:center"><button class="link" id="loginBtn">管理者登入</button></p>
+</main>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, getDoc, runTransaction, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDTl8Lpa1eNlG22oHvrqFPs3kOSdu4SnQo",
+  authDomain: "order-5eeed.firebaseapp.com",
+  projectId: "order-5eeed",
+  storageBucket: "order-5eeed.firebasestorage.app",
+  messagingSenderId: "1006198926254",
+  appId: "1:1006198926254:web:a20c02477de48f8529763f"
+};
+const ADMIN_UID = "tJiQxb9dWsNAoAb3Ssr6mfuxRhk2";
+const ROUTES = ["廟街", "建中街", "中華路"];
+const MAX = [11, 11, 4]; // 各路線可新增的店家數量上限
+
+const app = initializeApp(firebaseConfig), auth = getAuth(app), db = getFirestore(app);
+const $ = id => document.getElementById(id);
+let uid, isOwner = false, cfg = {}, sess = null, myOrder = null, unOrders = null, orderCache = [];
+let pickedStore = null, builtKey = null, qtyKey = null, touched = false, draft = null, dirty = false;
+const imgCache = {};
+const num = n => Number(n) || 0;
+const storesOf = i => { const a = cfg["s" + i]; return Array.isArray(a) ? a.map(s => ({ name: s.name || "", items: Array.isArray(s.items) ? s.items : [], img: s.img || "" })) : []; };
+const routeIdx = r => ROUTES.indexOf(r);
+const pad = n => String(n).padStart(2, "0");
+const fmt = t => { const d = new Date(t); return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+function msg(t){ const m = $("msg"); if (m) m.textContent = t || ""; }
+function mk(tag, text, cls){ const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+
+/* ---------- 菜單圖片（存在 Firestore 的 menuImages 集合） ---------- */
+async function loadImg(id, el){
+  try {
+    if (!imgCache[id]) { const s = await getDoc(doc(db, "menuImages/" + id)); imgCache[id] = s.exists() ? s.data().data : ""; }
+    if (imgCache[id]) el.src = imgCache[id];
+  } catch(e) {}
+}
+async function shrinkData(file){
+  const bmp = await createImageBitmap(file);
+  let w = 1000, q = 0.7;
+  for (let i = 0; i < 6; i++) {
+    const sc = Math.min(1, w / Math.max(bmp.width, bmp.height)), c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const out = c.toDataURL("image/jpeg", q);
+    if (out.length < 800000) return out;
+    w *= 0.8; q -= 0.08;
+  }
+  throw new Error("image too large");
+}
+
+/* ---------- 管理者 ---------- */
+function parseMenu(t){ return t.split("\n").map(l => l.trim()).filter(Boolean).map(l => { const m = l.match(/^(.+?)[\s,，:：$＄]+(\d+(?:\.\d+)?)\s*元?$/); return m ? { n: m[1].trim(), p: Number(m[2]) } : { n: l, p: 0 }; }); }
+const menuText = items => items.map(i => i.n + " " + i.p).join("\n");
+function buildEditor(){
+  const box = $("storeEdit"); box.textContent = "";
+  ROUTES.forEach((r, i) => {
+    box.appendChild(mk("h3", r + "（" + draft[i].length + " / " + MAX[i] + " 家）"));
+    draft[i].forEach((s, j) => {
+      const w = mk("div", null, "st"), n = document.createElement("input"), t = document.createElement("textarea"), d = mk("button", "刪除這家店", "link");
+      n.placeholder = "店家名稱"; n.value = s.name; n.oninput = () => { s.name = n.value; dirty = true; };
+      t.placeholder = "菜單，一行一道：\n雞腿飯 90\n排骨飯 85"; t.value = s.menu; t.oninput = () => { s.menu = t.value; dirty = true; };
+      d.onclick = () => { if (confirm("刪除「" + (s.name || "未命名") + "」？")) { draft[i].splice(j, 1); dirty = true; buildEditor(); } };
+      const im = mk("div", null, "mu"), f = document.createElement("input");
+      const drawImg = () => { im.textContent = ""; if (s.img) { const g = document.createElement("img"); g.className = "mimg"; loadImg(s.img, g); const x = mk("button", "移除圖片", "link"); x.onclick = () => { s.img = ""; dirty = true; drawImg(); }; im.append(g, x); } };
+      drawImg(); f.type = "file"; f.accept = "image/*"; f.style.marginBottom = "6px";
+      f.onchange = async () => {
+        const file = f.files[0]; if (!file) return; im.textContent = "上傳中…";
+        try { const data = await shrinkData(file), id = "m" + Date.now() + Math.random().toString(36).slice(2, 6); await setDoc(doc(db, "menuImages/" + id), { data }); imgCache[id] = data; s.img = id; dirty = true; }
+        catch(e) { im.textContent = "圖片上傳失敗，請換一張或重試"; return; }
+        drawImg();
+      };
+      w.append(n, t, mk("div", "菜單圖片（選填，記得按「儲存」）", "mu"), f, im, d); box.appendChild(w);
+    });
+    const full = draft[i].length >= MAX[i], a = mk("button", full ? "已達 " + MAX[i] + " 家上限" : "＋ 新增店家"); a.disabled = full;
+    a.onclick = () => { if (draft[i].length >= MAX[i]) return; draft[i].push({ name: "", menu: "", img: "" }); dirty = true; buildEditor(); };
+    box.appendChild(a);
+  });
+}
+function renderAdmin(){
+  const c = $("adminCard");
+  if (!isOwner) { c.hidden = true; return; }
+  c.hidden = false;
+  if (!c.dataset.built) {
+    c.dataset.built = "1";
+    c.innerHTML = '<h2>管理者</h2><button class="pri" id="newSess">新增一場點餐</button><h3>各路線的店家與菜單</h3><p class="mu">菜單會顯示給同事參考，一行一道，例如「雞腿飯 90」。同事點餐時自行輸入想吃什麼。</p><div id="storeEdit"></div><button class="pri" id="saveStores">儲存店家與菜單</button><div id="amsg" class="mu"></div>';
+    $("newSess").onclick = async () => {
+      if (sess && sess.route == null && !confirm("目前這場還沒有人選路線，確定要另開新的一場嗎？")) return;
+      try { await setDoc(doc(db, "sessions/s" + Date.now()), { createdAt: Date.now(), route: null, byName: "", at: 0 }); } catch(e) { $("amsg").textContent = "新增失敗：" + (e.code || e.message); }
+    };
+    $("saveStores").onclick = async () => {
+      const o = {}; ROUTES.forEach((r, i) => { o["s" + i] = draft[i].filter(s => s.name.trim()).map(s => ({ name: s.name.trim(), items: parseMenu(s.menu), img: s.img || "" })).slice(0, MAX[i]); });
+      try { await setDoc(doc(db, "config/routes"), o); dirty = false; $("amsg").textContent = "已儲存"; } catch(e) { $("amsg").textContent = "儲存失敗：" + (e.code || e.message); }
+    };
+  }
+  if (!dirty) { draft = ROUTES.map((r, i) => storesOf(i).map(s => ({ name: s.name, menu: menuText(s.items), img: s.img }))); buildEditor(); }
+}
+
+/* ---------- 路線與店家 ---------- */
+function renderRoute(){
+  const appEl = $("app"); appEl.textContent = "";
+  if (!sess) {
+    appEl.textContent = isOwner ? "目前沒有點餐，請按上方「新增一場點餐」。" : "目前沒有開放的點餐，請等管理者新增。";
+    $("orderCard").hidden = true; $("reset").hidden = true; $("sub").textContent = ""; renderList(); return;
+  }
+  $("sub").textContent = "本場開單時間：" + fmt(sess.createdAt) + "　第一位選擇路線的人決定路線，其他人會自動跟隨。";
+  if (sess.route) {
+    const st = storesOf(routeIdx(sess.route));
+    appEl.innerHTML = '<h2>本場路線</h2><div class="lock"><span class="badge">已鎖定</span><span class="big"></span></div><p class="mu" id="by"></p><h3 id="sth"></h3><div class="routes" id="stbtns"></div>';
+    appEl.querySelector(".big").textContent = sess.route;
+    $("by").textContent = sess.byName ? sess.byName + " 選擇了這條路線" : "";
+    $("sth").textContent = st.length ? "請選擇店家" : "";
+    if (myOrder && myOrder.store && !pickedStore) pickedStore = myOrder.store;
+    st.forEach(s => {
+      const b = mk("button", (pickedStore === s.name ? "✓ " : "") + s.name);
+      if (pickedStore === s.name) b.style.borderColor = "var(--ac)";
+      b.onclick = () => { pickedStore = s.name; renderRoute(); };
+      $("stbtns").appendChild(b);
+    });
+    renderOrder();
+  } else {
+    appEl.innerHTML = '<h2>還沒有人選路線，請你先選</h2><input id="who" placeholder="你的名字" maxlength="20"><div class="routes" id="rts"></div><div id="msg"></div>';
+    try { $("who").value = localStorage.getItem("lunchName") || ""; } catch(e) {}
+    ROUTES.forEach((r, i) => { const b = mk("button", r); b.appendChild(mk("small", storesOf(i).map(s => s.name).join("、") || "（尚未設定店家）")); b.onclick = () => claim(r); $("rts").appendChild(b); });
+    $("orderCard").hidden = true;
+  }
+  $("reset").hidden = !(isOwner && sess.route);
+  renderList();
+}
+async function claim(r){
+  const name = $("who").value.trim();
+  if (!name) { msg("請先輸入名字"); return; }
+  try { localStorage.setItem("lunchName", name); } catch(e) {}
+  msg("送出中…");
+  const ref = doc(db, "sessions/" + sess.id);
+  try {
+    await runTransaction(db, async tx => {
+      const s = await tx.get(ref);
+      if (s.exists() && s.data().route) return; // 已有人先選，快照會自動更新畫面
+      tx.update(ref, { route: r, byName: name, at: Date.now() });
+    });
+  } catch(e) { msg("送出失敗，請重試（" + (e.code || "") + "）"); }
+}
+
+/* ---------- 點餐 ---------- */
+function renderOrder(){
+  const c = $("orderCard"), list = storesOf(routeIdx(sess.route));
+  if (list.length && !pickedStore) { c.hidden = true; return; }
+  c.hidden = false;
+  const st = list.find(s => s.name === pickedStore), items = st ? st.items : [];
+  const k2 = sess.id + "|" + (pickedStore || "");
+  if (qtyKey !== k2) { qtyKey = k2; touched = false; }
+  const mine = myOrder && (myOrder.store || "") === (pickedStore || "") ? myOrder : null;
+  if (builtKey !== k2) {
+    builtKey = k2;
+    c.innerHTML = '<h2 id="ohead"></h2><input id="oname" placeholder="你的名字" maxlength="20"><h3 id="mh">菜單</h3><div id="mimg"></div><ul id="menu"></ul><h3>你想吃什麼</h3><input id="meal" placeholder="自行輸入想吃的餐點，例如：雞腿飯" maxlength="80"><input id="note" placeholder="備註（少冰、不加蔥…）" maxlength="60"><button class="pri" id="save">送出餐點</button><div id="omsg" class="mu"></div>';
+    try { $("oname").value = localStorage.getItem("lunchName") || ""; } catch(e) {}
+    $("oname").oninput = $("note").oninput = $("meal").oninput = () => { touched = true; };
+    $("save").onclick = saveOrder;
+  }
+  $("ohead").textContent = pickedStore ? "點餐：" + pickedStore : "點餐";
+  if (!touched && mine) { $("oname").value = mine.name || ""; $("note").value = mine.note || ""; $("meal").value = mine.meal || ""; $("save").textContent = "更新我的餐點"; }
+  showMenu(items, st);
+}
+function showMenu(items, st){
+  const ul = $("menu"), m = $("mimg"), id = st && st.img ? st.img : ""; ul.textContent = ""; $("mh").hidden = !items.length && !id;
+  if (!id) m.textContent = "";
+  else if (m.dataset.id !== id) { m.textContent = ""; m.dataset.id = id; const g = document.createElement("img"); g.className = "mimg"; m.appendChild(g); loadImg(id, g); }
+  items.forEach(it => { const li = mk("li"); li.append(mk("span", it.n), mk("span", num(it.p) ? "$" + num(it.p) : "", "mu")); ul.appendChild(li); });
+}
+async function saveOrder(){
+  const name = $("oname").value.trim(), meal = $("meal").value.trim();
+  if (!name || !meal) { $("omsg").textContent = "請填名字和想吃的餐點"; return; }
+  try { localStorage.setItem("lunchName", name); } catch(e) {}
+  try { await setDoc(doc(db, "sessions/" + sess.id + "/orders/" + uid), { name, store: pickedStore || "", meal, note: $("note").value.trim(), at: Date.now() }); $("omsg").textContent = "已送出"; }
+  catch(e) { $("omsg").textContent = "送出失敗，請重試（" + (e.code || "") + "）"; }
+}
+
+/* ---------- 彙整（同事打什麼就列什麼） ---------- */
+function renderList(){
+  $("listCard").hidden = !sess;
+  $("cnt").textContent = orderCache.length;
+  const by = {}, lines = [];
+  orderCache.forEach(o => { const s = o.store || "（未指定店家）"; (by[s] = by[s] || []).push(o); });
+  const txt = o => (o.meal || "") + (o.note ? "（" + o.note + "）" : "");
+  const box = $("sumStores"); box.textContent = "";
+  Object.keys(by).forEach(s => {
+    box.appendChild(mk("h3", s + "（" + by[s].length + " 人）")); lines.push("【" + s + "】");
+    const ul = mk("ul");
+    by[s].forEach(o => { const li = mk("li"); li.append(mk("span", o.name), mk("span", txt(o), "mu")); ul.appendChild(li); lines.push(o.name + "：" + txt(o)); });
+    box.appendChild(ul); lines.push("");
+  });
+  $("copyBox").dataset.text = lines.join("\n").trim();
+}
+function watchOrders(){
+  if (unOrders) { unOrders(); unOrders = null; }
+  orderCache = []; myOrder = null; renderList();
+  if (!sess) return;
+  unOrders = onSnapshot(collection(db, "sessions/" + sess.id + "/orders"), q => {
+    orderCache = []; myOrder = null;
+    q.docs.forEach(x => { const v = x.data(); orderCache.push(v); if (x.id === uid) myOrder = v; });
+    orderCache.sort((a, b) => (a.at || 0) - (b.at || 0)); if (sess && sess.route) renderRoute(); else renderList();
+  }, () => {});
+}
+
+/* ---------- 啟動 ---------- */
+function start(){
+  const timer = setTimeout(() => { $("app").textContent = "連線較慢，請稍候或重新整理頁面。"; }, 10000);
+  $("copy").onclick = async () => {
+    const t = $("copyBox").dataset.text || "", b = $("copyBox");
+    try { await navigator.clipboard.writeText(t); $("copy").textContent = "已複製"; setTimeout(() => { $("copy").textContent = "複製彙整文字"; }, 1500); }
+    catch(e) { b.hidden = false; b.value = t; b.select(); }
+  };
+  onSnapshot(doc(db, "config/routes"), s => { cfg = s.exists() ? (s.data() || {}) : {}; renderAdmin(); if (sess) renderRoute(); }, () => {});
+  onSnapshot(query(collection(db, "sessions"), orderBy("createdAt", "desc"), limit(1)), q => {
+    clearTimeout(timer);
+    const prev = sess && sess.id, d = q.docs[0];
+    sess = d ? Object.assign({ id: d.id }, d.data()) : null;
+    if ((sess && sess.id) !== prev) { builtKey = null; qtyKey = null; pickedStore = null; watchOrders(); }
+    renderAdmin(); renderRoute();
+  }, e => { $("app").textContent = "讀取失敗，請重新整理（" + (e.code || "") + "）。"; });
+  $("reset").onclick = async () => { if (sess && confirm("確定要重設這場的路線嗎？")) { try { await updateDoc(doc(db, "sessions/" + sess.id), { route: null, byName: "", at: 0 }); } catch(e) {} } };
+}
+(async function init(){
+  $("loginBtn").onclick = () => {
+    if (isOwner) { signOut(auth).then(() => location.reload()); return; }
+    $("loginCard").hidden = !$("loginCard").hidden;
+  };
+  $("doLogin").onclick = async () => {
+    $("lmsg").textContent = "登入中…";
+    try { await signInWithEmailAndPassword(auth, $("em").value.trim(), $("pw").value); location.reload(); }
+    catch(e) { $("lmsg").textContent = "登入失敗（" + (e.code || "") + "）"; }
+  };
+  try {
+    await auth.authStateReady();
+    if (!auth.currentUser) await signInAnonymously(auth);
+    uid = auth.currentUser.uid; isOwner = uid === ADMIN_UID;
+    $("loginBtn").textContent = isOwner ? "管理者登出" : "管理者登入";
+    start();
+  } catch(e) { $("app").textContent = "登入失敗，請確認 Firebase 已啟用匿名登入（" + (e.code || e.message) + "）"; }
+})();
+</script>
+</body>
+</html>
