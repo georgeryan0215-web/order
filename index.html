@@ -64,7 +64,7 @@ const firebaseConfig = {
   messagingSenderId: "1006198926254",
   appId: "1:1006198926254:web:a20c02477de48f8529763f"
 };
-const ADMIN_UID = "tJiQxb9dWsNAoAb3Ssr6mfuxRhk2";
+const ADMIN_UIDS = ["tJiQxb9dWsNAoAb3Ssr6mfuxRhk2", "ilNJadZPxtU5IaL89vACbyFD5Mw1", "g2n17toXttaVD5xulsO7uuHtIm13"]; // 管理者 UID 清單
 const ROUTES = ["廟街", "建中街", "中華路"];
 const MAX = [11, 11, 4]; // 各路線可新增的店家數量上限
 
@@ -287,7 +287,7 @@ function start(){
   try {
     await auth.authStateReady();
     if (!auth.currentUser) await signInAnonymously(auth);
-    uid = auth.currentUser.uid; isOwner = uid === ADMIN_UID;
+    uid = auth.currentUser.uid; isOwner = ADMIN_UIDS.includes(uid);
     $("loginBtn").textContent = isOwner ? "管理者登出" : "管理者登入";
     start();
   } catch(e) { $("app").textContent = "登入失敗，請確認 Firebase 已啟用匿名登入（" + (e.code || e.message) + "）"; }
